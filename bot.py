@@ -39,19 +39,21 @@ duel_state = {
 
 # --- DATA PERSISTENCE ---
 # Functions to load and save user data from the users.json file
+DATA_DIR = '/var/data'
+USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 def load_users():
     """Loads user data from users.json."""
-    if not os.path.exists('users.json'):
+    if not os.path.exists(USERS_FILE):
         return {}
     try:
-        with open('users.json', 'r') as f:
+        with open(USERS_FILE, 'r') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 def save_users(users_data):
     """Saves user data to users.json."""
-    with open('users.json', 'w') as f:
+    with open(USERS_FILE, 'w') as f:
         json.dump(users_data, f, indent=4)
 
 # --- BOT EVENTS ---
