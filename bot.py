@@ -169,7 +169,11 @@ async def register(ctx, codeforces_handle: str):
         # Wait for the user to react
         await bot.wait_for('reaction_add', timeout=300.0, check=check)
 
-        # After reaction, verify the change on Codeforces
+        # Acknowledge reaction and wait for API to update
+        await ctx.author.send("✅ Got it! Checking for the update on Codeforces in 30 seconds...")
+        await asyncio.sleep(30)
+
+        # After the delay, verify the change on Codeforces
         response = requests.get(f"https://codeforces.com/api/user.info?handles={codeforces_handle}")
         data = response.json()
         if data['status'] == 'OK' and data['result'][0].get('firstName') == token:
@@ -182,8 +186,7 @@ async def register(ctx, codeforces_handle: str):
                 f"You can now change your name back on Codeforces."
             )
         else:
-            print(data)
-            await ctx.author.send("Verification failed. The first name on your Codeforces profile did not match the token.")
+            await ctx.author.send("Verification failed. The first name on your Codeforces profile did not match the token. Please try again.")
 
     except asyncio.TimeoutError:
         await ctx.author.send("Verification timed out. Please run the `!register` command again.")
@@ -249,6 +252,10 @@ async def updatehandle(ctx, new_codeforces_handle: str):
     try:
         await bot.wait_for('reaction_add', timeout=300.0, check=check)
 
+        # Acknowledge reaction and wait for API to update
+        await ctx.author.send("✅ Got it! Checking for the update on Codeforces in 30 seconds to allow for API caching...")
+        await asyncio.sleep(30)
+
         response = requests.get(f"https://codeforces.com/api/user.info?handles={new_codeforces_handle}")
         data = response.json()
 
@@ -261,7 +268,7 @@ async def updatehandle(ctx, new_codeforces_handle: str):
                 f"You can now change your name back on Codeforces."
             )
         else:
-            await ctx.author.send("Verification failed. The first name on your Codeforces profile did not match the token.")
+            await ctx.author.send("Verification failed. The first name on your Codeforces profile did not match the token. Please try again.")
 
     except asyncio.TimeoutError:
         await ctx.author.send("Verification timed out. Please run the `!updatehandle` command again.")
