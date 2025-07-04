@@ -23,7 +23,7 @@ intents.members = True  # Required to see server members
 intents.message_content = True  # Required to read message content
 
 # Create the bot instance
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 # --- GLOBAL STATE MANAGEMENT ---
 # This dictionary holds the state of any ongoing duel or challenge
@@ -39,7 +39,7 @@ duel_state = {
 
 # --- DATA PERSISTENCE ---
 # Functions to load and save user data from the users.json file
-DATA_DIR = '/var/data'
+DATA_DIR = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', './') 
 USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 def load_users():
     """Loads user data from users.json."""
@@ -65,7 +65,55 @@ async def on_ready():
     print('Bot is ready and online.')
     print('------')
 
-# --- USER REGISTRATION & PROFILE ---
+# --- HELP, USER REGISTRATION & PROFILE ---
+@bot.command(name='help', help='Shows this help message.')
+async def help(ctx):
+    """Displays a formatted help message for all commands."""
+    embed = discord.Embed(
+        title="🤖 Codeforces Duel Bot Help",
+        description="Here are all the available commands and their formats:",
+        color=discord.Color.purple()
+    )
+
+    embed.add_field(
+        name="`!register <handle>`",
+        value="Register yourself with your Codeforces handle. Verification is required.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!updatehandle <new_handle>`",
+        value="Change your registered handle. This also requires re-verification.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!challenge @user <rating>`",
+        value="Challenge another user to a duel. The rating should be 800-3500.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!solved`",
+        value="Use this during a duel once your solution gets an 'Accepted' verdict on Codeforces.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!profile [@user]`",
+        value="View your own or another user's profile, points, and Codeforces handle.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!leaderboard`",
+        value="See the server's top duelists ranked by points.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!help`",
+        value="Shows this help message.",
+        inline=False
+    )
+
+    embed.set_footer(text="Let the duels begin!")
+    await ctx.send(embed=embed)
+
 @bot.command(name='register', help='Register your Codeforces handle. Usage: !register <YourCodeforcesHandle>')
 async def register(ctx, codeforces_handle: str):
     """Registers a user by verifying their Codeforces account."""
