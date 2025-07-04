@@ -182,6 +182,7 @@ async def register(ctx, codeforces_handle: str):
                 f"You can now change your name back on Codeforces."
             )
         else:
+            print(data)
             await ctx.author.send("Verification failed. The first name on your Codeforces profile did not match the token.")
 
     except asyncio.TimeoutError:
