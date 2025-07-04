@@ -26,9 +26,16 @@ intents.message_content = True  # Required to read message content
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 # --- GLOBAL STATE MANAGEMENT ---
-# This dictionary will hold the duel state for each server separately.
-# The key will be the server_id.
-duel_state = {}
+# This dictionary holds the state of any ongoing duel or challenge
+duel_state = {
+    "active": False,
+    "challenger": None,
+    "opponent": None,
+    "challenge_message": None,
+    "problem": None,
+    "problem_url": None,
+    "start_time": None
+}
 
 # --- DATA PERSISTENCE ---
 # Functions to load and save user data from the users.json file
@@ -48,16 +55,6 @@ def save_users(users_data):
     """Saves user data to users.json."""
     with open(USERS_FILE, 'w') as f:
         json.dump(users_data, f, indent=4)
-
-def calculate_points(rating):
-    """Calculates points awarded based on problem rating.
-    
-    The formula gives 5 base points, plus 1 bonus point for every 100 rating
-    points above 800.
-    """
-    base_points = 5
-    bonus_points = (rating - 800) // 100
-    return base_points + bonus_points
 
 # --- BOT EVENTS ---
 @bot.event
@@ -80,32 +77,32 @@ async def help(ctx):
 
     embed.add_field(
         name="`!register <handle>`",
-        value="Register yourself with your Codeforces handle on this server.",
+        value="Register yourself with your Codeforces handle. Verification is required.",
         inline=False
     )
     embed.add_field(
         name="`!updatehandle <new_handle>`",
-        value="Change your registered handle on this server (requires re-verification).",
+        value="Change your registered handle. This also requires re-verification.",
         inline=False
     )
     embed.add_field(
         name="`!challenge @user <rating>`",
-        value="Challenge another user to a duel. Higher ratings award more points.",
+        value="Challenge another user to a duel. The rating should be 800-3500.",
         inline=False
     )
     embed.add_field(
         name="`!solved`",
-        value="Use this during a duel to claim victory and earn points based on the problem's rating.",
+        value="Use this during a duel once your solution gets an 'Accepted' verdict on Codeforces.",
         inline=False
     )
     embed.add_field(
         name="`!profile [@user]`",
-        value="View your own or another user's profile and points on this server.",
+        value="View your own or another user's profile, points, and Codeforces handle.",
         inline=False
     )
     embed.add_field(
         name="`!leaderboard`",
-        value="See this server's top-ranked duelists.",
+        value="See the server's top duelists ranked by points.",
         inline=False
     )
     embed.add_field(
@@ -114,7 +111,7 @@ async def help(ctx):
         inline=False
     )
 
-    embed.set_footer(text="Let the duels begin! Higher rating = higher reward!")
+    embed.set_footer(text="Let the duels begin!")
     await ctx.send(embed=embed)
 
 @bot.command(name='register', help='Register your Codeforces handle. Usage: !register <YourCodeforcesHandle>')
@@ -200,9 +197,8 @@ async def updatehandle(ctx, new_codeforces_handle: str):
         await ctx.send("You are not registered on this server. Please use `!register` to create an account.")
         return
 
-    # MODIFIED: Check the duel state for this specific server
-    if duel_state.get(server_id, {}).get("active", False):
-        await ctx.send("You cannot change your handle while a duel or challenge is in progress on this server.")
+    if duel_state["active"]:
+        await ctx.send("You cannot change your handle while a duel or challenge is in progress.")
         return
 
     for user_id, data in server_users.items():
@@ -214,7 +210,7 @@ async def updatehandle(ctx, new_codeforces_handle: str):
         await ctx.send("This is already your registered handle.")
         return
 
-    # --- Re-verification Process (same as before) ---
+    # --- Re-verification Process (similar to !register) ---
     try:
         response = requests.get(f"https://codeforces.com/api/user.info?handles={new_codeforces_handle}")
         data = response.json()
@@ -321,10 +317,10 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
     opponent_id = str(opponent.id)
     server_users = all_data.get(server_id, {})
 
-    if duel_state.get(server_id, {}).get("active", False):
-        await ctx.send("A challenge or duel is already in progress on this server. Please wait.")
+    # --- Validation checks (same as before) ---
+    if duel_state["active"]:
+        await ctx.send("A challenge or duel is already in progress. Please wait.")
         return
-
     if challenger_id not in server_users or opponent_id not in server_users:
         await ctx.send("Both you and your opponent must be registered on this server to duel.")
         return
@@ -338,17 +334,7 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
         await ctx.send("Please choose a valid rating (800-3500, in increments of 100).")
         return
 
-    # MODIFIED: Store the rating in the server's duel state
-    duel_state[server_id] = {
-        "active": True,
-        "challenger": ctx.author,
-        "opponent": opponent,
-        "rating": rating,  # Store the rating for later
-        "problem": None,
-        "problem_url": None,
-        "start_time": None
-    }
-
+    duel_state.update({"active": True, "challenger": ctx.author, "opponent": opponent})
     challenge_message = await ctx.send(
         f"⚔️ {opponent.mention}, you have been challenged by {ctx.author.mention} to a duel at rating **{rating}**!\n"
         f"React with ✅ to accept or ❌ to decline within 5 minutes."
@@ -361,24 +347,29 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
 
     try:
         reaction, user = await bot.wait_for('reaction_add', timeout=300.0, check=check)
+
         if str(reaction.emoji) == '❌':
             await ctx.send(f"{opponent.mention} has declined the challenge.")
-            del duel_state[server_id]
+            duel_state.update({"active": False, "challenger": None, "opponent": None})
             return
 
+        # --- If accepted, proceed ---
         await ctx.send(f"{opponent.mention} has accepted! Finding a suitable problem...")
         challenger_handle = server_users[challenger_id]['codeforces_handle']
         opponent_handle = server_users[opponent_id]['codeforces_handle']
 
+        # --- MORE ROBUST API CALLS ---
         try:
+            # Helper function to make and check API calls
             async def get_cf_api(url):
                 response = requests.get(url)
-                response.raise_for_status()
+                response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
                 data = response.json()
                 if data.get('status') != 'OK':
                     raise Exception(f"Codeforces API Error: {data.get('comment', 'No comment provided')}")
                 return data
 
+            # Fetch solved problems for both users
             ch_data = await get_cf_api(f"https://codeforces.com/api/user.status?handle={challenger_handle}")
             op_data = await get_cf_api(f"https://codeforces.com/api/user.status?handle={opponent_handle}")
             problems_data = await get_cf_api("https://codeforces.com/api/problemset.problems")
@@ -389,29 +380,31 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
 
         except Exception as e:
             await ctx.send(f"An error occurred while fetching data from Codeforces. The duel is cancelled. Please try again later.\n`Error: {e}`")
-            del duel_state[server_id]
+            duel_state.update({"active": False, "challenger": None, "opponent": None})
             return
+        # --- END OF ROBUST API CALLS ---
 
         if not potential_problems:
             await ctx.send(f"Could not find a suitable unsolved problem at rating {rating}. The challenge has been cancelled.")
-            del duel_state[server_id]
+            duel_state.update({"active": False, "challenger": None, "opponent": None})
             return
 
+        # --- Start the duel ---
         problem = random.choice(potential_problems)
         problem_url = f"https://codeforces.com/problemset/problem/{problem['contestId']}/{problem['index']}"
-        
-        duel_state[server_id].update({"problem": problem, "problem_url": problem_url, "start_time": datetime.now(UTC)})
-        
+        duel_state.update({"problem": problem, "problem_url": problem_url, "start_time": datetime.now(UTC)})
         await ctx.send(
             f"**Duel Start!**\n"
             f"**Problem:** {problem['name']} (Rating: {rating})\n"
             f"**Link:** {problem_url}\n\n"
-            f"{duel_state[server_id]['challenger'].mention} vs {duel_state[server_id]['opponent'].mention}: The first to solve it in **15 minutes** wins points based on rating! Type `!solved` when you have an accepted solution."
+            f"{duel_state['challenger'].mention} vs {duel_state['opponent'].mention}: The first to solve it in **15 minutes** wins 10 points! Type `!solved` when you have an accepted solution."
         )
-        bot.loop.create_task(duel_timeout_task(ctx, duel_state[server_id]['start_time'], server_id))
+
+        bot.loop.create_task(duel_timeout_task(ctx, duel_state['start_time']))
+
     except asyncio.TimeoutError:
         await ctx.send(f"The duel challenge for {opponent.mention} expired.")
-        del duel_state[server_id]
+        duel_state.update({"active": False, "challenger": None, "opponent": None})
 
 @bot.command(name='solved', help='Claim victory in the current duel.')
 async def solved(ctx):
@@ -422,25 +415,26 @@ async def solved(ctx):
     winner_id = str(ctx.author.id)
     server_users = all_data.get(server_id, {})
 
-    current_server_duel = duel_state.get(server_id, {})
-    if not current_server_duel.get("active") or current_server_duel.get("problem") is None:
-        await ctx.send("There is no duel in progress on this server.")
+    # Validation
+    if not duel_state["active"] or duel_state["problem"] is None:
+        await ctx.send("There is no duel in progress.")
         return
-    if ctx.author != current_server_duel['challenger'] and ctx.author != current_server_duel['opponent']:
+    if ctx.author != duel_state['challenger'] and ctx.author != duel_state['opponent']:
         await ctx.send("You are not a participant in the current duel.")
         return
 
     if winner_id not in server_users:
+        # This case should ideally not be hit due to checks in !challenge, but it's good practice
         await ctx.send("Error: Could not find your user data for this server.")
         return
 
     winner_handle = server_users[winner_id]['codeforces_handle']
-    problem_info = current_server_duel['problem']
-    duel_rating = current_server_duel['rating'] # MODIFIED: Get the rating
+    problem_info = duel_state['problem']
 
     await ctx.send(f"Checking {ctx.author.mention}'s recent submissions for a correct solution...")
 
     try:
+        # Check the user's last 10 submissions on Codeforces
         response = requests.get(f"https://codeforces.com/api/user.status?handle={winner_handle}&from=1&count=10")
         response.raise_for_status()
         data = response.json()
@@ -450,39 +444,36 @@ async def solved(ctx):
         submissions = data['result']
         for sub in submissions:
             if (sub['problem']['contestId'] == problem_info['contestId'] and sub['problem']['index'] == problem_info['index'] and sub['verdict'] == 'OK'):
-                if datetime.fromtimestamp(sub['creationTimeSeconds'], UTC) > current_server_duel['start_time']:
-                    # MODIFIED: Calculate weighted points and update user score
-                    points_awarded = calculate_points(duel_rating)
-                    server_users[winner_id]['points'] += points_awarded
+                if datetime.fromtimestamp(sub['creationTimeSeconds'], UTC) > duel_state['start_time']:
+                    server_users[winner_id]['points'] += 10
                     all_data[server_id] = server_users
                     save_users(all_data)
-                    
-                    # MODIFIED: Update win message
                     await ctx.send(
                         f"🎉 **Winner!** {ctx.author.mention} has solved the problem and won the duel!\n"
-                        f"**{points_awarded} points** awarded for a {duel_rating}-rated problem. Their total is now **{server_users[winner_id]['points']}**."
+                        f"10 points awarded. Their total is now **{server_users[winner_id]['points']}**."
                     )
-                    del duel_state[server_id]
+                    duel_state.update({"active": False, "challenger": None, "opponent": None, "problem": None, "start_time": None})
                     return
 
         await ctx.send("I couldn't find a recent, correct submission from you for the duel problem. Keep trying!")
+
     except Exception as e:
         await ctx.send("An error occurred while checking submissions.")
         print(f"Error during !solved: {e}")
 
-async def duel_timeout_task(ctx, original_start_time, server_id):
+# ADD THIS NEW FUNCTION
+async def duel_timeout_task(ctx, original_start_time):
     """A background task that waits 15 minutes and ends the duel if it's still active."""
     await asyncio.sleep(900)  # Wait for 15 minutes
 
-    # MODIFIED: Check the duel state for the specific server
-    current_server_duel = duel_state.get(server_id, {})
-    if current_server_duel.get("active") and current_server_duel.get("start_time") == original_start_time:
+    # After waiting, check if the duel is the SAME one that started this task
+    if duel_state["active"] and duel_state["start_time"] == original_start_time:
         await ctx.send(
-            f"**Time's up!** The duel between {current_server_duel['challenger'].mention} and "
-            f"{current_server_duel['opponent'].mention} has ended in a **draw**. No points awarded."
+            f"**Time's up!** The duel between {duel_state['challenger'].mention} and "
+            f"{duel_state['opponent'].mention} has ended in a **draw**. No points awarded."
         )
-        # MODIFIED: Clear the server's duel state
-        del duel_state[server_id]
+        # Reset the duel state
+        duel_state.update({"active": False, "challenger": None, "opponent": None, "problem": None, "start_time": None})
 
 # --- RUN THE BOT ---
 if __name__ == "__main__":
