@@ -116,16 +116,17 @@ async def help(ctx):
 
 @bot.command(name='register', help='Register your Codeforces handle. Usage: !register <YourCodeforcesHandle>')
 async def register(ctx, codeforces_handle: str):
-    """Registers a user by verifying their Codeforces account."""
-
-    # Clean the handle to remove any Discord escape characters
+    """Registers a user by verifying their Codeforces account for the current server."""
     codeforces_handle = codeforces_handle.replace('\\_', '_')
-
-    users = load_users()
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
     discord_id = str(ctx.author.id)
 
-    if discord_id in users:
-        await ctx.send("You are already registered!")
+    # Get or create the dictionary for this specific server
+    server_users = all_data.get(server_id, {})
+
+    if discord_id in server_users:
+        await ctx.send("You are already registered on this server!")
         return
 
     # Check if the Codeforces handle is valid by calling the API
@@ -168,12 +169,13 @@ async def register(ctx, codeforces_handle: str):
         # After reaction, verify the change on Codeforces
         response = requests.get(f"https://codeforces.com/api/user.info?handles={codeforces_handle}")
         data = response.json()
-
         if data['status'] == 'OK' and data['result'][0].get('firstName') == token:
-            users[discord_id] = {"codeforces_handle": codeforces_handle, "points": 0}
-            save_users(users)
+            # Add user to the server-specific dictionary
+            server_users[discord_id] = {"codeforces_handle": codeforces_handle, "points": 0}
+            all_data[server_id] = server_users
+            save_users(all_data)
             await ctx.author.send(
-                f"✅ Verification successful! You are now registered as `{codeforces_handle}`.\n"
+                f"✅ Verification successful! You are now registered as `{codeforces_handle}` on **{ctx.guild.name}**.\n"
                 f"You can now change your name back on Codeforces."
             )
         else:
@@ -184,30 +186,27 @@ async def register(ctx, codeforces_handle: str):
 
 @bot.command(name='updatehandle', help='Update your Codeforces handle. Requires re-verification.')
 async def updatehandle(ctx, new_codeforces_handle: str):
-    """Updates an existing user's Codeforces handle after re-verification."""
-
-    # Clean the handle to remove any Discord escape characters
+    """Updates an existing user's Codeforces handle after re-verification for the current server."""
     new_codeforces_handle = new_codeforces_handle.replace('\\_', '_')
-
-    users = load_users()
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
     discord_id = str(ctx.author.id)
+    server_users = all_data.get(server_id, {})
 
-    # --- Initial Checks ---
-    if discord_id not in users:
-        await ctx.send("You are not registered yet. Please use `!register` to create an account.")
+    if discord_id not in server_users:
+        await ctx.send("You are not registered on this server. Please use `!register` to create an account.")
         return
 
     if duel_state["active"]:
         await ctx.send("You cannot change your handle while a duel or challenge is in progress.")
         return
 
-    # Check if the new handle is already registered by another user
-    for user_id, data in users.items():
+    for user_id, data in server_users.items():
         if data['codeforces_handle'].lower() == new_codeforces_handle.lower() and user_id != discord_id:
-            await ctx.send(f"The handle `{new_codeforces_handle}` is already registered by another user.")
+            await ctx.send(f"The handle `{new_codeforces_handle}` is already registered by another user on this server.")
             return
 
-    if users[discord_id]['codeforces_handle'].lower() == new_codeforces_handle.lower():
+    if server_users[discord_id]['codeforces_handle'].lower() == new_codeforces_handle.lower():
         await ctx.send("This is already your registered handle.")
         return
 
@@ -249,11 +248,11 @@ async def updatehandle(ctx, new_codeforces_handle: str):
         data = response.json()
 
         if data['status'] == 'OK' and data['result'][0].get('firstName') == token:
-            # Update the handle in the database
-            users[discord_id]['codeforces_handle'] = new_codeforces_handle
-            save_users(users)
+            server_users[discord_id]['codeforces_handle'] = new_codeforces_handle
+            all_data[server_id] = server_users
+            save_users(all_data)
             await ctx.author.send(
-                f"✅ Verification successful! Your Codeforces handle has been updated to `{new_codeforces_handle}`.\n"
+                f"✅ Verification successful! Your Codeforces handle has been updated to `{new_codeforces_handle}` on **{ctx.guild.name}**.\n"
                 f"You can now change your name back on Codeforces."
             )
         else:
@@ -264,18 +263,20 @@ async def updatehandle(ctx, new_codeforces_handle: str):
 
 @bot.command(name='profile', help='Shows your or another user\'s profile.')
 async def profile(ctx, member: discord.Member = None):
-    """Displays the profile of the mentioned user or the command author."""
+    """Displays the profile of the mentioned user or the command author for the current server."""
     target_user = member or ctx.author
-    users = load_users()
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
     discord_id = str(target_user.id)
+    server_users = all_data.get(server_id, {})
 
-    if discord_id not in users:
-        await ctx.send(f"{target_user.display_name} is not registered.")
+    if discord_id not in server_users:
+        await ctx.send(f"{target_user.display_name} is not registered on this server.")
         return
 
-    user_data = users[discord_id]
+    user_data = server_users[discord_id]
     embed = discord.Embed(
-        title=f"{target_user.display_name}'s Profile",
+        title=f"{target_user.display_name}'s Profile on {ctx.guild.name}",
         color=discord.Color.blue()
     )
     embed.add_field(name="Codeforces Handle", value=f"[{user_data['codeforces_handle']}](https://codeforces.com/profile/{user_data['codeforces_handle']})", inline=False)
@@ -284,43 +285,44 @@ async def profile(ctx, member: discord.Member = None):
 
 @bot.command(name='leaderboard', help='Shows the server leaderboard.')
 async def leaderboard(ctx):
-    """Displays the top 10 users by points."""
-    users = load_users()
-    if not users:
-        await ctx.send("No users are registered yet.")
+    """Displays the top 10 users by points for the current server."""
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
+    server_users = all_data.get(server_id, {})
+
+    if not server_users:
+        await ctx.send("No users are registered on this server yet.")
         return
 
-    # Sort users by points in descending order
-    sorted_users = sorted(users.items(), key=lambda item: item[1]['points'], reverse=True)
-
-    embed = discord.Embed(title="Leaderboard", color=discord.Color.gold())
+    sorted_users = sorted(server_users.items(), key=lambda item: item[1]['points'], reverse=True)
+    embed = discord.Embed(title=f"Leaderboard for {ctx.guild.name}", color=discord.Color.gold())
     description = ""
     for i, (discord_id, data) in enumerate(sorted_users[:10]):
         try:
             user = await bot.fetch_user(int(discord_id))
             description += f"**{i+1}. {user.display_name}** - {data['points']} points ({data['codeforces_handle']})\n"
         except discord.NotFound:
-            # User might have left the server
-             description += f"**{i+1}. Unknown User** - {data['points']} points ({data['codeforces_handle']})\n"
-
+            description += f"**{i+1}. Unknown User** - {data['points']} points ({data['codeforces_handle']})\n"
     embed.description = description
     await ctx.send(embed=embed)
 
 # --- DUELING SYSTEM COMMANDS ---
 @bot.command(name='challenge', help='Challenge another user to a duel. Usage: !challenge @<User> <Rating>')
 async def challenge(ctx, opponent: discord.Member, rating: int):
-    """Initiates a duel challenge against another user."""
+    """Initiates a duel challenge against another user on the same server."""
     global duel_state
-    users = load_users()
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
     challenger_id = str(ctx.author.id)
     opponent_id = str(opponent.id)
+    server_users = all_data.get(server_id, {})
 
     # --- Validation checks (same as before) ---
     if duel_state["active"]:
         await ctx.send("A challenge or duel is already in progress. Please wait.")
         return
-    if challenger_id not in users or opponent_id not in users:
-        await ctx.send("Both you and your opponent must be registered to duel.")
+    if challenger_id not in server_users or opponent_id not in server_users:
+        await ctx.send("Both you and your opponent must be registered on this server to duel.")
         return
     if ctx.author == opponent:
         await ctx.send("You cannot challenge yourself.")
@@ -332,13 +334,7 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
         await ctx.send("Please choose a valid rating (800-3500, in increments of 100).")
         return
 
-    # --- Set duel to pending state ---
-    duel_state.update({
-        "active": True,
-        "challenger": ctx.author,
-        "opponent": opponent
-    })
-
+    duel_state.update({"active": True, "challenger": ctx.author, "opponent": opponent})
     challenge_message = await ctx.send(
         f"⚔️ {opponent.mention}, you have been challenged by {ctx.author.mention} to a duel at rating **{rating}**!\n"
         f"React with ✅ to accept or ❌ to decline within 5 minutes."
@@ -359,9 +355,8 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
 
         # --- If accepted, proceed ---
         await ctx.send(f"{opponent.mention} has accepted! Finding a suitable problem...")
-
-        challenger_handle = users[challenger_id]['codeforces_handle']
-        opponent_handle = users[opponent_id]['codeforces_handle']
+        challenger_handle = server_users[challenger_id]['codeforces_handle']
+        opponent_handle = server_users[opponent_id]['codeforces_handle']
 
         # --- MORE ROBUST API CALLS ---
         try:
@@ -379,27 +374,9 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
             op_data = await get_cf_api(f"https://codeforces.com/api/user.status?handle={opponent_handle}")
             problems_data = await get_cf_api("https://codeforces.com/api/problemset.problems")
 
-            # --- SAFER DATA PROCESSING ---
-            # Safely create sets of solved problems, skipping any malformed entries
-            ch_solved = {
-                f"{p['problem']['contestId']}{p['problem']['index']}"
-                for p in ch_data['result']
-                if p.get('verdict') == 'OK' and 'contestId' in p.get('problem', {})
-            }
-            op_solved = {
-                f"{p['problem']['contestId']}{p['problem']['index']}"
-                for p in op_data['result']
-                if p.get('verdict') == 'OK' and 'contestId' in p.get('problem', {})
-            }
-
-            # Safely filter for potential duel problems
-            potential_problems = [
-                p for p in problems_data['result']['problems']
-                if p.get('rating') == rating and 'contestId' in p and 'index' in p and
-                f"{p.get('contestId')}{p.get('index')}" not in ch_solved and
-                f"{p.get('contestId')}{p.get('index')}" not in op_solved
-            ]
-            # --- END OF SAFER DATA PROCESSING ---
+            ch_solved = {f"{p['problem']['contestId']}{p['problem']['index']}" for p in ch_data['result'] if p.get('verdict') == 'OK' and 'contestId' in p.get('problem', {})}
+            op_solved = {f"{p['problem']['contestId']}{p['problem']['index']}" for p in op_data['result'] if p.get('verdict') == 'OK' and 'contestId' in p.get('problem', {})}
+            potential_problems = [p for p in problems_data['result']['problems'] if p.get('rating') == rating and 'contestId' in p and 'index' in p and f"{p.get('contestId')}{p.get('index')}" not in ch_solved and f"{p.get('contestId')}{p.get('index')}" not in op_solved]
 
         except Exception as e:
             await ctx.send(f"An error occurred while fetching data from Codeforces. The duel is cancelled. Please try again later.\n`Error: {e}`")
@@ -415,12 +392,7 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
         # --- Start the duel ---
         problem = random.choice(potential_problems)
         problem_url = f"https://codeforces.com/problemset/problem/{problem['contestId']}/{problem['index']}"
-        duel_state.update({
-            "problem": problem,
-            "problem_url": problem_url,
-            "start_time": datetime.now(UTC)
-        })
-
+        duel_state.update({"problem": problem, "problem_url": problem_url, "start_time": datetime.now(UTC)})
         await ctx.send(
             f"**Duel Start!**\n"
             f"**Problem:** {problem['name']} (Rating: {rating})\n"
@@ -434,13 +406,14 @@ async def challenge(ctx, opponent: discord.Member, rating: int):
         await ctx.send(f"The duel challenge for {opponent.mention} expired.")
         duel_state.update({"active": False, "challenger": None, "opponent": None})
 
-
 @bot.command(name='solved', help='Claim victory in the current duel.')
 async def solved(ctx):
-    """Allows a user to claim they have solved the duel problem."""
+    """Allows a duel participant to claim victory after solving the problem."""
     global duel_state
-    users = load_users()
+    all_data = load_users()
+    server_id = str(ctx.guild.id)
     winner_id = str(ctx.author.id)
+    server_users = all_data.get(server_id, {})
 
     # Validation
     if not duel_state["active"] or duel_state["problem"] is None:
@@ -450,7 +423,12 @@ async def solved(ctx):
         await ctx.send("You are not a participant in the current duel.")
         return
 
-    winner_handle = users[winner_id]['codeforces_handle']
+    if winner_id not in server_users:
+        # This case should ideally not be hit due to checks in !challenge, but it's good practice
+        await ctx.send("Error: Could not find your user data for this server.")
+        return
+
+    winner_handle = server_users[winner_id]['codeforces_handle']
     problem_info = duel_state['problem']
 
     await ctx.send(f"Checking {ctx.author.mention}'s recent submissions for a correct solution...")
@@ -458,26 +436,23 @@ async def solved(ctx):
     try:
         # Check the user's last 10 submissions on Codeforces
         response = requests.get(f"https://codeforces.com/api/user.status?handle={winner_handle}&from=1&count=10")
-        submissions = response.json()['result']
+        response.raise_for_status()
+        data = response.json()
+        if data.get('status') != 'OK':
+            raise Exception(f"Codeforces API Error: {data.get('comment', 'Failed to fetch status')}")
 
+        submissions = data['result']
         for sub in submissions:
-            # Check if submission matches problem and is correct
-            if (sub['problem']['contestId'] == problem_info['contestId'] and
-                sub['problem']['index'] == problem_info['index'] and
-                sub['verdict'] == 'OK'):
-
-                # Check if the submission was made after the duel started
+            if (sub['problem']['contestId'] == problem_info['contestId'] and sub['problem']['index'] == problem_info['index'] and sub['verdict'] == 'OK'):
                 if datetime.fromtimestamp(sub['creationTimeSeconds'], UTC) > duel_state['start_time']:
-                    users[winner_id]['points'] += 10
-                    save_users(users)
-
+                    server_users[winner_id]['points'] += 10
+                    all_data[server_id] = server_users
+                    save_users(all_data)
                     await ctx.send(
                         f"🎉 **Winner!** {ctx.author.mention} has solved the problem and won the duel!\n"
-                        f"10 points awarded. Their total is now **{users[winner_id]['points']}**."
+                        f"10 points awarded. Their total is now **{server_users[winner_id]['points']}**."
                     )
-
-                    # End the duel
-                    duel_state.update({"active": False, "challenger": None, "opponent": None, "problem": None})
+                    duel_state.update({"active": False, "challenger": None, "opponent": None, "problem": None, "start_time": None})
                     return
 
         await ctx.send("I couldn't find a recent, correct submission from you for the duel problem. Keep trying!")
